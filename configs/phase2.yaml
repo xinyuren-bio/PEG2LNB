@@ -1,0 +1,26 @@
+# Phase2：改盒子 -> gmx 填充水与 NaCl -> MDAnalysis 删掉气泡质心半径内的 W/NA/CL -> 完成含水含盐模拟
+
+phase1_run_dir: "/Users/renxinyu/lipid_simulation/peg10"
+phase2_run_dir: "/Users/renxinyu/lipid_simulation/peg10/phase2"
+
+# 如果你在 Phase1 的模拟里，最终坐标文件名是 production.gro，就不用改
+dry_gro_candidates: ["production.gro", "equilibration_1.gro", "equilibration_4.gro", "minimization_2.gro"]
+
+target_box_nm: 35.0
+bubble_radius_nm: 12.0
+salt_conc_m: 0.15
+
+# 气泡质心用于距离判定（不含 PEG、不含 O2）
+center_resnames: ["DPPC", "DOPS", "CHOL"]
+
+# 删除气泡内溶剂
+remove_resnames_inside_radius: ["W", "NA", "CL"]
+
+# 用于 gmx genion 交互选择的组名（你的 Martini 水组名是 W）
+genion_solvent_group: "W"
+
+gas: "O2"  # 生成 ndx 的气体组名（残基名）
+
+# Martini 水坐标文件（resname 必须是 W）
+solvent_cs_gro: "shared_assets/martini_W.gro"
+

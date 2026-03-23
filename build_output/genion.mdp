@@ -1,0 +1,5 @@
+; minimal mdp for grompp -> genion
+integrator = md
+nsteps = 0
+nstlist = 1
+cutoff-scheme = Verlet

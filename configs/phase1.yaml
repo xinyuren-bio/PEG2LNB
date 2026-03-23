@@ -1,0 +1,40 @@
+# Phase1：从 LNB-MDT 构建脂质纳气泡 -> DSPE 生长 PEG -> 去除全部水/离子 -> 真空体系模拟
+
+# 1) LNB-MDT（lnb_gener_martini3.py）生成的工作目录
+work_dir: "work/phase1_build"
+
+# 2) 调 lnb_gener_martini3.py 的参数
+lnb_build:
+  distance: 1               # -d
+  radius: 10                # -r
+  box: 35                   # -x/-y/-z
+  area_per_lipid: 1.0      # -a
+  solvent: "W"             # -sol
+  salt: 0.15               # -salt
+  lipids:
+    DPPC: 50
+    DSPE: 10
+    DOPS: 30
+    CHOL: 10
+  gas: "O2"                # -gas
+  gas_num: 5000           # -gas_num（若你改成密度模式，用 gas_density 替代）
+
+# 3) PEG 生长与真空化（调用 version3/pipe.py）
+peg:
+  input_gro_rel_to_version3: "work/phase1_build/system.gro"
+  sphere_center: "auto"
+
+  dppe_to_peg: "all"       # 传给 pipe.py 的 dppe_to_peg
+  head_resname: "DSPE"    # pipe.py 中 head_resname（你的 LNB-MDT 用的是 DSPE）
+  peg_length: 45
+  peg_resname: "45PEG"
+  peg_bond_length_nm: 0.36
+
+  # pipe.py 生成 vacuum 体系的输出目录（相对 PEG2LNB 根目录）
+  vacuum_run_dir: "/Users/renxinyu/lipid_simulation/peg10"
+  output_gro: "system_peg.gro"
+  output_top: "system_peg.top"
+
+  # 是否对几何重叠做修复（有助于 min 报错的稳定性）
+  fix_overlap_enable: true
+
