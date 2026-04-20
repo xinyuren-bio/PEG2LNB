@@ -2,6 +2,10 @@
 
 为脂质纳气泡添加 PEG 修饰（流程说明见 [`README_zh.md`](README_zh.md)）。
 
+<p align="center">
+  <img src="figure.png" alt="PEG2LNB: PEGylated lipid nano-bubble (illustrative rendering)" width="85%">
+</p>
+
 Two-phase pipeline for **Martini 3** lipid nano-bubble (LNB) systems with **PEGylated DSPE**, vacuum stripping, re-solvation, bubble-interior solvent removal, and ion neutralization—wired for **GROMACS** (`gmx`).
 
 - **Phase 1**: Build LNB → grow PEG on DSPE → remove water and ions (vacuum-ready system).
