@@ -1,0 +1,12 @@
+; Custom link: DSPE-PEO (same as DPPE/POPE/DOPE-PEO, add DSPE to resname)
+; Use with: polyply gen_params ... -lib martini3 -f DSPE.itp DSPE_PEO_link.ff
+
+[ link ]
+resname "DPPE|POPE|DOPE|DSPE|PEO"
+[ atoms ]
+NH3 {"replace": {"atype": "P5", "charge": 0.0}}
+[ bonds ]
+NH3    +EC    1   0.3220   7000    {"group": "lipid-PEG"}
+[ angles ]
+NH3      +EC      ++EC       2  135.00   50.0  {"group": "lipid-PEG", "version": 1}
+NH3      +EC      ++EC      10  135.00   75.0  {"group": "lipid-PEG", "version": 2, "ifndef": "TI"}

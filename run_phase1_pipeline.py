@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -61,6 +62,7 @@ def main():
     peg = cfg["peg"]
     vacuum_run_dir = repo_root / peg["vacuum_run_dir"]
     vacuum_run_dir_rel = os.path.relpath(vacuum_run_dir, start=repo_root)
+    phase1_assets_dir = repo_root / "default" / "phase1"
 
     work_dir.mkdir(parents=True, exist_ok=True)
     system_gro = work_dir / "system.gro"
@@ -125,6 +127,8 @@ sphere_center: "{peg['sphere_center']}"
 peg_resname: "{peg['peg_resname']}"
 peg_length: {peg['peg_length']}
 fix_overlap_enable: {str(peg.get('fix_overlap_enable', True)).lower()}
+phase1_all_non_gas_as_layer: true
+default_assets_dir: "{str(phase1_assets_dir.resolve())}"
 
 dpeg_itp: "" 
 """
@@ -137,7 +141,34 @@ dpeg_itp: ""
         cwd=str(repo_root),
     )
 
-    # 3) 不自动跑 MD：将目录拷到服务器后，在运行目录内自行执行 pipe.sh
+    # 3) 显式执行一次最终 system.gro 的重叠修复，生成 system_fix.gro 供 phase1 模拟使用
+    phase1_system_gro = vacuum_run_dir / "system.gro"
+    phase1_system_fix_gro = vacuum_run_dir / "system_fix.gro"
+    if phase1_system_gro.is_file():
+        print("\n[Phase1] Fixing overlaps on final system.gro -> system_fix.gro ...")
+        subprocess.run(
+            [
+                sys.executable,
+                str(repo_root / "fix_overlap.py"),
+                str(phase1_system_gro),
+                str(phase1_system_fix_gro),
+            ],
+            check=True,
+            cwd=str(repo_root),
+        )
+    else:
+        print(f"\n[Phase1] 警告: 未找到 {phase1_system_gro}，跳过最终 fix_overlap。")
+
+    # 4) 兼容旧产物：确保 phase1 目录使用 phase1 专用 pipe.sh 和 mdps
+    mdps_src = phase1_assets_dir / "mdps"
+    if mdps_src.is_dir():
+        shutil.rmtree(vacuum_run_dir / "mdps", ignore_errors=True)
+        shutil.copytree(mdps_src, vacuum_run_dir / "mdps", dirs_exist_ok=True)
+    pipe_sh_src = phase1_assets_dir / "pipe.sh"
+    if pipe_sh_src.is_file():
+        shutil.copy2(pipe_sh_src, vacuum_run_dir / "pipe.sh")
+
+    # 5) 不自动跑 MD：将目录拷到服务器后，在运行目录内自行执行 pipe.sh
     pipe_sh = vacuum_run_dir / "pipe.sh"
     if pipe_sh.is_file():
         try:

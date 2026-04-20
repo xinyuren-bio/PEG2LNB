@@ -1,0 +1,13 @@
+[ moleculetype ]
+; molname   nrexcl
+O2          1
+
+[ atoms ]
+; id    type    resnr   residu  atom    cgnr    charge  mass
+1       TC3     1       O2      O2      1       0       32.00
+
+#ifdef POSRES_O2
+[ position_restraints ]
+; ai  funct  fcx    fcy    fcz
+   1    1    100   100   100
+#endif

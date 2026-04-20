@@ -7,31 +7,28 @@ work_dir: "work/phase1_build"
 lnb_build:
   distance: 1               # -d
   radius: 10                # -r
-  box: 35                   # -x/-y/-z
+  box: 30                   # -x/-y/-z
   area_per_lipid: 1.0      # -a
   solvent: "W"             # -sol
   salt: 0.15               # -salt
   lipids:
-    DPPC: 50
+    DPPC: 75
     DSPE: 10
-    DOPS: 30
-    CHOL: 10
+    CHOL: 15
   gas: "O2"                # -gas
-  gas_num: 5000           # -gas_num（若你改成密度模式，用 gas_density 替代）
+  gas_num: 5000           # -gas_num
 
 # 3) PEG 生长与真空化（调用 version3/pipe.py）
 peg:
-  input_gro_rel_to_version3: "work/phase1_build/system.gro"
   sphere_center: "auto"
+  dppe_to_peg: "all"       
+  head_resname: "DSPE"     # 需要修饰的磷脂名称
+  peg_length: 12           # PEG 长度
+  peg_resname: "12PEG"     # PEG 残基名
+  peg_bond_length_nm: 0.36  # PEG 与磷脂之间的键长
 
-  dppe_to_peg: "all"       # 传给 pipe.py 的 dppe_to_peg
-  head_resname: "DSPE"    # pipe.py 中 head_resname（你的 LNB-MDT 用的是 DSPE）
-  peg_length: 45
-  peg_resname: "45PEG"
-  peg_bond_length_nm: 0.36
-
-  # pipe.py 生成 vacuum 体系的输出目录（相对 PEG2LNB 根目录）
-  vacuum_run_dir: "/Users/renxinyu/lipid_simulation/peg10"
+  # pipe.py 生成 vacuum 体系的输出目录（相对 PEG2LNB 根目录；可改为任意子目录）
+  vacuum_run_dir: "output/phase1"
   output_gro: "system_peg.gro"
   output_top: "system_peg.top"
 

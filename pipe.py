@@ -371,7 +371,7 @@ def _run_polyply_gen_params(
     # polyply 头基残基名可单独配置；默认用 config.polyply.head_resname（如 DSPE），
     # 若未配置则回退到 pipe 的 head_resname（如 DPPE）
     head_resname_pol = (polyply_cfg.get("head_resname") or head_resname).strip()
-    work_dir = _resolve_path(polyply_cfg.get("work_dir", "default/itps"), VERSION3_DIR)
+    work_dir = _resolve_path(polyply_cfg.get("work_dir", "default/shared_assets/itps"), VERSION3_DIR)
     head_itp = polyply_cfg.get("head_itp") or f"{head_resname_pol}.itp"
     link_ff = polyply_cfg.get("link_ff", "DSPE_PEO_link.ff")
     lib = polyply_cfg.get("lib", "martini3")
@@ -397,21 +397,21 @@ def _run_polyply_gen_params(
 
 
 def ensure_peg_itp(config: dict, out_dir: Path) -> None:
-    """确保 default/itps/{peg_resname}.itp 存在。
+    """确保 default/shared_assets/itps/{peg_resname}.itp 存在。
 
     逻辑：
-      1) 若 version3/default/itps/{peg_resname}.itp 已存在，直接使用（视为全局库），不再生成；
+      1) 若 version3/default/shared_assets/itps/{peg_resname}.itp 已存在，直接使用（视为全局库），不再生成；
       2) 否则：
-         - 若配置了 dpeg_itp 且文件存在：读入并改 moleculetype 为 peg_resname，写到 default/itps/{peg_resname}.itp；
-         - 若 dpeg_itp 不存在或未配置：用 polyply gen_params 在 default/itps 下生成，再改 moleculetype。
+         - 若配置了 dpeg_itp 且文件存在：读入并改 moleculetype 为 peg_resname，写到 default/shared_assets/itps/{peg_resname}.itp；
+         - 若 dpeg_itp 不存在或未配置：用 polyply gen_params 在 default/shared_assets/itps 下生成，再改 moleculetype。
 
-    注意：不强制复制到每个 out_dir/itps，而是以 default/itps 为中心统一管理 PEG itp。
+    注意：不强制复制到每个 out_dir/itps，而是以 default/shared_assets/itps 为中心统一管理 PEG itp。
     """
     peg_resname = (config.get("peg_resname") or "15PEG").strip()[:5]
     peg_length = int(config.get("peg_length", 15))
     head_resname = (config.get("head_resname") or "DPPE").strip()
-    # 全局 itp 库目录：version3/default/itps
-    itps_dst = VERSION3_DIR / "default" / "itps"
+    # 全局 itp 库目录：version3/default/shared_assets/itps
+    itps_dst = VERSION3_DIR / "default" / "shared_assets" / "itps"
     itps_dst.mkdir(parents=True, exist_ok=True)
     dst_path = itps_dst / f"{peg_resname}.itp"
 
@@ -451,7 +451,7 @@ def ensure_peg_itp(config: dict, out_dir: Path) -> None:
         print(f"   已用 polyply 生成: {dst_path}")
     except FileNotFoundError as e:
         print(f"   {e}")
-        print("   请配置 config.yaml 中 dpeg_itp 指向已有 itp，或确保 polyply 与 default/itps 下 DSPE.itp、DSPE_PEO_link.ff 可用")
+        print("   请配置 config.yaml 中 dpeg_itp 指向已有 itp，或确保 polyply 与 default/shared_assets/itps 下 DSPE.itp、DSPE_PEO_link.ff 可用")
     except subprocess.CalledProcessError as e:
         print(f"   polyply gen_params 失败: {e}")
     except Exception as e:
@@ -462,25 +462,26 @@ def _copy_default_pipe_assets_to_run_dir(
     run_dir: Path,
     output_gro: Path,
     output_top: Path | None,
+    assets_dir: Path | None = None,
 ) -> None:
-    """将 `version3/default` 中的资源复制到 run_dir，便于直接运行 default/pipe.sh。
+    """将默认资源复制到 run_dir，便于直接运行阶段专用 pipe.sh。
 
-    同时把当前输出文件复制为 default/pipe.sh 所需的文件名：
+    同时把当前输出文件复制为阶段脚本所需的文件名：
     - system.gro
     - system.top
     """
-    default_dir = VERSION3_DIR / "default"
+    default_dir = assets_dir or (VERSION3_DIR / "default")
+    shared_assets_dir = VERSION3_DIR / "default" / "shared_assets"
     out_itps = run_dir / "itps"
     out_mdps = run_dir / "mdps"
 
-    itps_src = default_dir / "itps"
+    itps_src = shared_assets_dir / "itps"
+    if not itps_src.is_dir():
+        itps_src = default_dir / "itps"
     if itps_src.is_dir():
         shutil.copytree(itps_src, out_itps, dirs_exist_ok=True)
 
-    # 默认脚本里用 mdps/，但目录实际叫 mpds
     mdps_src = default_dir / "mdps"
-    if not mdps_src.is_dir():
-        mdps_src = default_dir / "mpds"
     if mdps_src.is_dir():
         shutil.copytree(mdps_src, out_mdps, dirs_exist_ok=True)
 
@@ -488,7 +489,7 @@ def _copy_default_pipe_assets_to_run_dir(
     if pipe_sh_src.is_file():
         shutil.copy2(pipe_sh_src, run_dir / "pipe.sh")
 
-    # default/pipe.sh 期望 system.gro/system.top/system.ndx
+    # 阶段 pipe.sh 期望 system.gro/system.top/system.ndx
     system_gro = run_dir / "system.gro"
     if output_gro.is_file():
         shutil.copy2(output_gro, system_gro)
@@ -499,6 +500,31 @@ def _copy_default_pipe_assets_to_run_dir(
 def _generate_ndx_for_run_dir(run_dir: Path, config: dict, gro_for_ndx: Path) -> None:
     """使用 version2/ndx.py 生成 system.ndx（真空体系：water/ions 为空）。"""
     ndx_path = run_dir / "system.ndx"
+
+    if config.get("phase1_all_non_gas_as_layer", False):
+        gas_resname = str(config.get("gas") or "O2").strip().upper()
+        groups = {"System": [], "lnb_layer": [], "lnb_gas": []}
+        with open(gro_for_ndx, "r", encoding="utf-8") as gro_file:
+            lines = gro_file.readlines()
+        atom_count = int(lines[1].strip())
+        atom_lines = lines[2 : 2 + atom_count]
+        for atom_index, line in enumerate(atom_lines, start=1):
+            resname = line[5:10].strip().upper()
+            groups["System"].append(atom_index)
+            if resname == gas_resname:
+                groups["lnb_gas"].append(atom_index)
+            else:
+                groups["lnb_layer"].append(atom_index)
+
+        ndx_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(ndx_path, "w", encoding="utf-8") as ndx_file:
+            for group_name in ("System", "lnb_layer", "lnb_gas"):
+                ndx_file.write(f"[ {group_name} ]\n")
+                indices = groups[group_name]
+                for i in range(0, len(indices), 15):
+                    ndx_file.write(" ".join(str(idx) for idx in indices[i : i + 15]) + "\n")
+                ndx_file.write("\n")
+        return
 
     # 需要包含 PEG 的残基名（最终 gro 里是 peg_resname）
     lipid_resnames = []
@@ -742,7 +768,7 @@ def _write_simple_top(
 
     - itp 路径统一假定为相对当前 top 的 itps/ 子目录（如 itps/DPPC.itp）；
     - include 顺序参考 version2/build_lnb：martini_v3、ffbond、ions、solu、各脂质、O2、PEG 等；
-    - 仅 include 实际存在于 default/itps 下的 itp 文件。
+    - 仅 include 实际存在于 default/shared_assets/itps 下的 itp 文件。
     """
     from collections import Counter
     counts = Counter()
@@ -754,7 +780,7 @@ def _write_simple_top(
     order_first = ("DPPC", "DOPC", "DOPS", "CHOL", "DPPE", "DSPE", peg_resname, "O2", "W", "NA", "CL")
     rest = sorted(k for k in counts if k not in order_first)
     # 1) include 段：从默认 itp 库中仅 include 已存在的 itp
-    default_itps_dir = VERSION3_DIR / "default" / "itps"
+    default_itps_dir = VERSION3_DIR / "default" / "shared_assets" / "itps"
     itp_order = [
         "martini_v3.itp",
         "ffbond.itp",
@@ -869,13 +895,15 @@ def main():
     print("4. 质心归中并按 PEG 最外半径自动调整盒子大小 …")
     _recenter_resize_and_wrap(output_gro, config)
 
-    # 5. 确保 PEG itp 存在（有 dpeg_itp 则复用，否则用 polyply 生成到 default/itps）
+    # 5. 确保 PEG itp 存在（有 dpeg_itp 则复用，否则用 polyply 生成到 default/shared_assets/itps）
     out_dir = output_gro.parent
     print("5. 确保 PEG itp 存在（有 dpeg_itp 则复制，否则 polyply 生成）…")
     ensure_peg_itp(config, out_dir)
 
     print("6. 复制默认模拟资源并生成 system.ndx …")
-    _copy_default_pipe_assets_to_run_dir(out_dir, output_gro, output_top)
+    assets_dir_cfg = config.get("default_assets_dir")
+    assets_dir = _resolve_path(assets_dir_cfg, VERSION3_DIR) if assets_dir_cfg else None
+    _copy_default_pipe_assets_to_run_dir(out_dir, output_gro, output_top, assets_dir=assets_dir)
     _generate_ndx_for_run_dir(out_dir, config, out_dir / "system.gro")
 
     print("完成。")

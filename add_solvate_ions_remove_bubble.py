@@ -2,15 +2,19 @@
 """
 根据 YAML 配置：对“干体系”执行
 1) gmx solvate 填充 Martini 水（W）
-2) gmx genion 加 Na/Cl（NA/CL）
-3) MDAnalysis 删除“气泡质心半径 bubble_radius_nm 内”的 W/NA/CL
-4) 更新输出 top 的 [ molecules ] 里 W/NA/CL 的计数
+2) MDAnalysis 删除气泡质心半径 bubble_radius_nm 内的指定残基（建议仅 W；此时尚无盐离子）
+3) gmx genion -neutral：用水分子置换为 NA/CL，使体系净电荷为 0
+4) gmx genion -conc：在中和后再按目标盐浓度补加等量 NA/CL
+5) 按最终 gro 回写 top 中 W/NA/CL 的 [ molecules ] 计数；
+   genion 先 -neutral 再 -conc 时，.gro 离子区常为「残基名 NA（成盐 Na⁺）→ CL → ION/NA（中和 Na⁺）」，
+   与 itp 中分子类型名均为 NA，但 top 须写两行 NA（分段计数），顺序为：
+   W → NA(成盐) → CL → NA(中和)。
 
 输入期望：
 - in_gro 与 in_top 对应，且 in_top 至少能让 gmx solvate/genion 正常写入/修改 molecules
 输出：
-- out_ions_gro/out_ions_top：加水+加盐后
-- out_removed_gro/out_removed_top：删掉气泡内 W/NA/CL 后
+- out_solvated_gro/out_solvated_top：仅溶剂化（检查点）
+- out_removed_gro/out_removed_top：删泡内溶剂并中和后的最终体系
 """
 
 from __future__ import annotations
@@ -130,6 +134,10 @@ def _update_molecules_counts_in_top(top_path: Path, counts: dict[str, int]) -> N
             continue
         mol = parts[0].strip().upper()
         if mol in wanted:
+            # genion -neutral 有时会在 [ molecules ] 里追加第二行同名离子；
+            # 只保留第一行并写入与 gro 一致的计数，避免两行同名导致 GROMACS 误算总数。
+            if updated.get(mol):
+                continue
             cnt = counts.get(mol, 0)
             # 兼容多空格；保持名字列宽不强制
             new_lines.append(f"{parts[0]:<16}{cnt:>6d}\n")
@@ -148,6 +156,83 @@ def _update_molecules_counts_in_top(top_path: Path, counts: dict[str, int]) -> N
     top_path.write_text("".join(new_lines), encoding="utf-8")
 
 
+def _update_molecules_w_na_cl_na_order(
+    top_path: Path,
+    *,
+    w: int,
+    na_salt: int,
+    cl: int,
+    na_neutral: int,
+) -> None:
+    """
+    与 genion 先 -neutral 再 -conc 的典型 .gro 一致：成盐段残基名常为 NA，中和段残基名为 ION、
+    原子名为 NA；两段在拓扑里均为分子类型 NA，须分两行，且顺序为
+    W → NA(成盐) → CL → NA(中和)。
+    """
+    text = top_path.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    bounds = _find_section_bounds(lines, "molecules")
+    if not bounds:
+        raise RuntimeError(f"未找到 top 中 [ molecules ] 段: {top_path}")
+    start, end = bounds
+
+    new_lines: list[str] = []
+    new_lines.extend(lines[: start + 1])
+
+    inserted = False
+    for i in range(start + 1, end):
+        line = lines[i]
+        stripped = line.strip()
+        if not stripped or stripped.startswith(";") or stripped.startswith("#"):
+            new_lines.append(line)
+            continue
+        parts = stripped.split()
+        mol = parts[0].strip().upper()
+        if mol in {"W", "NA", "CL"}:
+            if not inserted:
+                new_lines.append(f"{'W':<16}{w:>6d}\n")
+                new_lines.append(f"{'NA':<16}{na_salt:>6d}\n")
+                new_lines.append(f"{'CL':<16}{cl:>6d}\n")
+                new_lines.append(f"{'NA':<16}{na_neutral:>6d}\n")
+                inserted = True
+            continue
+        new_lines.append(line)
+
+    if not inserted:
+        raise RuntimeError(
+            f"[ molecules ] 中未找到 W/NA/CL 行，无法写入离子计数: {top_path}"
+        )
+
+    new_lines.extend(lines[end:])
+    top_path.write_text("".join(new_lines), encoding="utf-8")
+
+
+def _extract_molecule_names_from_top(top_text: str) -> list[str]:
+    """
+    提取 [ molecules ] 段中声明过的分子名（按出现顺序去重）。
+    """
+    lines = top_text.splitlines(keepends=False)
+    bounds = _find_section_bounds([l + "\n" for l in lines], "molecules")
+    if not bounds:
+        return []
+    start, end = bounds
+    names: list[str] = []
+    seen: set[str] = set()
+    for i in range(start + 1, end):
+        stripped = lines[i].strip()
+        if not stripped or stripped.startswith(";") or stripped.startswith("#"):
+            continue
+        parts = stripped.split()
+        if not parts:
+            continue
+        name = parts[0].strip()
+        key = name.upper()
+        if key not in seen:
+            seen.add(key)
+            names.append(name)
+    return names
+
+
 def _count_residues_by_resname(u: Any, resnames: set[str]) -> dict[str, int]:
     resnames_upper = {r.upper() for r in resnames}
     out: dict[str, int] = {r.upper(): 0 for r in resnames_upper}
@@ -156,6 +241,34 @@ def _count_residues_by_resname(u: Any, resnames: set[str]) -> dict[str, int]:
         if rn in out:
             out[rn] += 1
     return out
+
+
+def _count_solvent_and_ions_for_top(u: Any) -> dict[str, int]:
+    """
+    统计用于回写 [ molecules ] 的 W/NA/CL 计数。
+
+    Martini `ions.itp` 里的 NA/CL 分子常写成：
+    - moleculetype: NA / CL
+    - residu(resname): ION
+    - atomname: NA / CL
+    因此这里对离子按残基逐个识别：
+    - W: resname == W
+    - NA/CL: 优先识别 resname == NA/CL；否则兼容 resname == ION 且首原子名为 NA/CL
+    """
+    counts = {"W": 0, "NA": 0, "CL": 0}
+    for r in u.residues:
+        rn = (r.resname or "").strip().upper()
+        if rn == "W":
+            counts["W"] += 1
+            continue
+        if rn in {"NA", "CL"}:
+            counts[rn] += 1
+            continue
+        if rn == "ION" and len(r.atoms) > 0:
+            atom_name = (r.atoms[0].name or "").strip().upper()
+            if atom_name in {"NA", "CL"}:
+                counts[atom_name] += 1
+    return counts
 
 
 def _min_image_dist_nm(p_nm: Any, center_nm: Any, box_nm: Any) -> float:
@@ -253,7 +366,7 @@ def main() -> None:
     solvent_cs_gro = Path(
         cfg.get(
             "solvent_cs_gro",
-            "shared_assets/martini_W.gro",
+            "default/shared_assets/martini_W.gro",
         )
     )
     if not solvent_cs_gro.is_absolute():
@@ -261,8 +374,8 @@ def main() -> None:
     if not solvent_cs_gro.is_file():
         raise FileNotFoundError(f"solvent_cs_gro 不存在: {solvent_cs_gro}")
 
-    salt_conc_m = float(cfg.get("salt_conc_m", 0.15))
     bubble_radius_nm = float(cfg.get("bubble_radius_nm", 12.0))
+    salt_conc_m = float(cfg.get("salt_conc_m", 0.15))
 
     # 可选：在溶剂化之前重设盒子尺寸，并把“体系中心”平移到新盒子中心。
     # 用于修复“修改了 gro 的 box 但坐标未平移”的情况。
@@ -314,8 +427,8 @@ def main() -> None:
     center_resnames = cfg.get("center_resnames", ["DPPC", "DOPS", "CHOL"])
     center_resnames = [str(x).upper() for x in center_resnames]
 
-    # 删除对象：W + NA + CL
-    remove_resnames = cfg.get("remove_resnames_inside_radius", ["W", "NA", "CL"])
+    # 删除对象：默认只删泡内 W（加盐前无 NA/CL；若列表含 NA/CL 仅当 gro 里已存在时生效）
+    remove_resnames = cfg.get("remove_resnames_inside_radius", ["W"])
     remove_resnames = [str(x).upper() for x in remove_resnames]
     remove_set = set(remove_resnames)
 
@@ -323,7 +436,6 @@ def main() -> None:
     # gmx genion 交互时通常会要求选择“要替换的溶剂组”，在 Martini 水体系里组名一般叫 `W`
     genion_solvent_group = str(cfg.get("genion_solvent_group", "W"))
     genion_solvent_group = _parse_group_input(genion_solvent_group)
-
     gmx_exec = str(cfg.get("gmx_exec", "gmx"))
 
     # genion 的 mdp（只用于 grompp 生成 tpr）
@@ -338,8 +450,6 @@ def main() -> None:
     # 输出文件名
     out_solvated_gro = output_dir / cfg.get("out_solvated_gro", "out_solvated.gro")
     out_solvated_top = output_dir / cfg.get("out_solvated_top", "out_solvated.top")
-    out_ions_gro = output_dir / cfg.get("out_ions_gro", "out_ions.gro")
-    out_ions_top = output_dir / cfg.get("out_ions_top", "out_ions.top")
     out_removed_gro = output_dir / cfg.get("out_removed_gro", "out_removed.gro")
     out_removed_top = output_dir / cfg.get("out_removed_top", "out_removed.top")
 
@@ -361,6 +471,14 @@ def main() -> None:
             '#include "itps/ions.itp"',
         ],
     )
+    # 自动补齐 [ molecules ] 中已出现、且 itps 目录里存在的分子 include（例如 18PEG.itp）
+    auto_include_lines: list[str] = []
+    for mol_name in _extract_molecule_names_from_top(tmp_top_text):
+        itp_path = dst_itps_dir / f"{mol_name}.itp"
+        if itp_path.is_file():
+            auto_include_lines.append(f'#include "itps/{mol_name}.itp"')
+    if auto_include_lines:
+        tmp_top_text = _ensure_include_lines(tmp_top_text, auto_include_lines)
     tmp_top.write_text(tmp_top_text, encoding="utf-8")
 
     # --- Step 1: solvate ---
@@ -383,57 +501,14 @@ def main() -> None:
     # solvate 已更新 tmp_top；此处把它复制成 out_solvated_top 便于检查
     shutil.copy2(tmp_top, out_solvated_top)
 
-    # --- Step 2: genion ---
-    # 先用 grompp 生成 ions.tpr（用于 genion 自动计算体积等）
-    ions_tpr = output_dir / "ions.tpr"
-    ions_grompp_cmd = [
-        gmx_exec,
-        "grompp",
-        "-f",
-        str(genion_mdp_path),
-        "-c",
-        str(out_solvated_gro),
-        "-p",
-        str(tmp_top),
-        "-o",
-        str(ions_tpr),
-        "-maxwarn",
-        "1",
-    ]
-    _run(ions_grompp_cmd, cwd=output_dir)
-
-    # 交互提示用于选择 solvent group；通过 stdin 直接输入 genion_solvent_group
-    genion_cmd = [
-        gmx_exec,
-        "genion",
-        "-s",
-        str(ions_tpr),
-        "-o",
-        str(out_ions_gro),
-        "-p",
-        str(tmp_top),
-        "-pname",
-        "NA",
-        "-nname",
-        "CL",
-        "-conc",
-        str(salt_conc_m),
-    ]
-    # 你当前要求“不加中和”，所以不使用 -neutral
-    # genion 在某些版本/体系下会连续提示两次 "Select a group:"
-    # 这里先把相同的溶剂组名/序号喂两遍，避免第二次读不到输入。
-    stdin_text = f"{genion_solvent_group}\n{genion_solvent_group}\n"
-    _run(genion_cmd, cwd=output_dir, stdin_text=stdin_text)
-    shutil.copy2(tmp_top, out_ions_top)
-
-    # --- Step 3: MDAnalysis 删除气泡内 W/NA/CL ---
+    # --- Step 2: MDAnalysis 删除气泡内指定残基（建议仅 W）---
     try:
         import MDAnalysis as mda  # type: ignore
         import numpy as np  # type: ignore
     except Exception as e:  # pragma: no cover
         raise RuntimeError("需要安装 MDAnalysis：pip install MDAnalysis") from e
 
-    u = mda.Universe(str(out_ions_gro))
+    u = mda.Universe(str(out_solvated_gro))
     dims = u.dimensions
     if dims is None or len(dims) < 3:
         raise RuntimeError("MDAnalysis 读取 gro 的 box 失败（u.dimensions 为空）。")
@@ -446,7 +521,7 @@ def main() -> None:
         raise RuntimeError(f"未选中质心原子：center_resnames={center_resnames}，选择表达式={center_sel}")
     center_nm = np.array(center_atoms.centroid()) / 10.0  # Å -> nm（centroid 与 COM 都行，这里用 centroid 更稳）
 
-    # 删除计数：删掉 W/NA/CL，dist<=bubble_radius_nm
+    # dist<=bubble_radius_nm 内的 remove_set 残基删除
     target_residues = [
         r for r in u.residues
         if (r.resname or "").strip().upper() in remove_set
@@ -490,26 +565,131 @@ def main() -> None:
         if rn in counts_kept_upper:
             counts_kept_upper[rn] += 1
 
-    # out_removed_top：从 out_ions_top 复制，然后更新 [ molecules ] 里 W/NA/CL 的数量
-    shutil.copy2(out_ions_top, out_removed_top)
-    # genion/solvate 可能已经对 W/NA/CL 做过更新；我们在这里覆盖以保证与 gro 一致
+    # 删泡后 top：与 solvate 后的 tmp_top 对齐 W（及 remove_set 中其它项计数）
+    shutil.copy2(tmp_top, out_removed_top)
     _update_molecules_counts_in_top(out_removed_top, counts_kept_upper)
 
-    # --- 日志汇总 ---
     before_counts = _count_residues_by_resname(u, remove_set)
-    after_counts = counts_kept_upper
+    after_bubble_counts = counts_kept_upper
 
     def _fmt_counts(d: dict[str, int]) -> str:
         return ", ".join([f"{k}={d.get(k,0)}" for k in sorted(d.keys())])
 
-    print("\n==== Summary ====")
+    print("\n==== Summary (after bubble removal) ====")
     print(f"Bubble center (nm) = {center_nm.tolist()}")
     print(f"Bubble radius (nm) = {bubble_radius_nm}")
-    print(f"Removed solvent residues inside bubble: {removed}")
-    print(f"Before (W/NA/CL): {_fmt_counts({k.upper(): int(v) for k,v in before_counts.items()})}")
-    print(f"After  (W/NA/CL): {_fmt_counts({k.upper(): int(v) for k,v in after_counts.items()})}")
-    print(f"out_ions_gro: {out_ions_gro}")
-    print(f"out_ions_top: {out_ions_top}")
+    print(f"Removed residues inside bubble (remove_set): {removed}")
+    print(f"Before bubble removal: {_fmt_counts({k.upper(): int(v) for k,v in before_counts.items()})}")
+    print(f"After  bubble removal: {_fmt_counts({k.upper(): int(v) for k,v in after_bubble_counts.items()})}")
+    print(f"out_solvated_gro: {out_solvated_gro}")
+    print(f"out_solvated_top: {out_solvated_top}")
+
+    # --- Step 3: genion -neutral（置换 W 为 NA/CL，净电荷 -> 0）---
+    ions_tpr = output_dir / "ions.tpr"
+    _run(
+        [
+            gmx_exec,
+            "grompp",
+            "-f",
+            str(genion_mdp_path),
+            "-c",
+            str(out_removed_gro),
+            "-p",
+            str(out_removed_top),
+            "-o",
+            str(ions_tpr),
+            "-maxwarn",
+            "1",
+        ],
+        cwd=output_dir,
+    )
+    _run(
+        [
+            gmx_exec,
+            "genion",
+            "-s",
+            str(ions_tpr),
+            "-o",
+            str(out_removed_gro),
+            "-p",
+            str(out_removed_top),
+            "-pname",
+            "NA",
+            "-nname",
+            "CL",
+            "-neutral",
+        ],
+        cwd=output_dir,
+        stdin_text=f"{genion_solvent_group}\n{genion_solvent_group}\n",
+    )
+    u_final = mda.Universe(str(out_removed_gro))
+    final_counts = _count_solvent_and_ions_for_top(u_final)
+    _update_molecules_counts_in_top(
+        out_removed_top, {k.upper(): int(v) for k, v in final_counts.items()}
+    )
+    na_after_neutral = int(final_counts["NA"])
+
+    print("\n==== Summary (after genion -neutral) ====")
+    print(
+        "W/NA/CL: "
+        + _fmt_counts({k.upper(): int(v) for k, v in final_counts.items()})
+    )
+
+    # --- Step 4: genion -conc（中和后再补到目标盐浓度）---
+    if salt_conc_m > 0:
+        _run(
+            [
+                gmx_exec,
+                "grompp",
+                "-f",
+                str(genion_mdp_path),
+                "-c",
+                str(out_removed_gro),
+                "-p",
+                str(out_removed_top),
+                "-o",
+                str(ions_tpr),
+                "-maxwarn",
+                "1",
+            ],
+            cwd=output_dir,
+        )
+        _run(
+            [
+                gmx_exec,
+                "genion",
+                "-s",
+                str(ions_tpr),
+                "-o",
+                str(out_removed_gro),
+                "-p",
+                str(out_removed_top),
+                "-pname",
+                "NA",
+                "-nname",
+                "CL",
+                "-conc",
+                str(salt_conc_m),
+            ],
+            cwd=output_dir,
+            stdin_text=f"{genion_solvent_group}\n{genion_solvent_group}\n",
+        )
+        u_final = mda.Universe(str(out_removed_gro))
+        final_counts = _count_solvent_and_ions_for_top(u_final)
+        na_salt = int(final_counts["NA"]) - na_after_neutral
+        _update_molecules_w_na_cl_na_order(
+            out_removed_top,
+            w=int(final_counts["W"]),
+            na_salt=na_salt,
+            cl=int(final_counts["CL"]),
+            na_neutral=na_after_neutral,
+        )
+        print(f"\n==== Summary (after genion -conc {salt_conc_m} M) ====")
+        print(
+            "W/NA/CL: "
+            + _fmt_counts({k.upper(): int(v) for k, v in final_counts.items()})
+        )
+
     print(f"out_removed_gro: {out_removed_gro}")
     print(f"out_removed_top: {out_removed_top}")
 
@@ -519,7 +699,7 @@ def main() -> None:
     print(f"     {gmx_exec} grompp -f <your_mdp.mdp> -c {out_removed_gro} -p {out_removed_top} -maxwarn 1")
     print("2) 重点检查 grompp 输出中的：")
     print("   - topology/molecule count mismatch 类错误（这通常表示 top 没跟上 gro 的删改）")
-    print("   - 电荷/中和相关 warning（因为本脚本按你的要求不使用 -neutral，是否需要由你决定）")
+    print("   - Total charge 是否接近 0（中和后再加等量盐，理论上仍应接近 0）")
 
 
 if __name__ == "__main__":

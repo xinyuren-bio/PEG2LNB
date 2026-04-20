@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Phase2 一键运行：改盒子 -> solvate+genion -> 删气泡内 W/NA/CL -> 生成 ndx/pipe.sh -> 运行含水含盐模拟
+# Phase2 一键运行：改盒子 -> solvate -> 删气泡内溶剂 -> genion -neutral -> 生成 ndx/pipe.sh
 
 from __future__ import annotations
 
@@ -65,6 +65,7 @@ def main():
     repo_root = Path(__file__).resolve().parent  # PEG2LNB
     cfg_path = repo_root / "configs" / "phase2.yaml"
     cfg = _load_yaml_min(cfg_path)
+    phase2_assets_dir = repo_root / "default" / "phase2"
 
     phase1_run_dir = repo_root / cfg["phase1_run_dir"]
     phase2_run_dir = repo_root / cfg["phase2_run_dir"]
@@ -77,8 +78,14 @@ def main():
             dry_gro = p
             break
     if dry_gro is None:
-        # 退一步：直接用 system.gro
+        # 退一步：直接用 system.gro（候选列表里的文件若都不存在，就会走到这里）
         dry_gro = phase1_run_dir / "system.gro"
+        print(
+            "\n[Phase2] 提示: dry_gro_candidates 中无已存在的文件，改用 fallback:\n"
+            f"  in_gro = {dry_gro}"
+        )
+    else:
+        print(f"\n[Phase2] 选用的干结构 in_gro = {dry_gro}")
     dry_top = phase1_run_dir / "system.top"
 
     # 临时 phase2 配置给 add_solvate_ions_remove_bubble.py 使用
@@ -87,15 +94,15 @@ def main():
 in_top: "{dry_top}"
 output_dir: "{phase2_run_dir}"
 
-salt_conc_m: {cfg.get('salt_conc_m', 0.15)}
 bubble_radius_nm: {cfg.get('bubble_radius_nm', 12.0)}
+salt_conc_m: {cfg.get('salt_conc_m', 0.15)}
 
 center_resnames: {cfg.get('center_resnames', ['DPPC','DOPS','CHOL'])}
-remove_resnames_inside_radius: {cfg.get('remove_resnames_inside_radius', ['W','NA','CL'])}
+remove_resnames_inside_radius: {cfg.get('remove_resnames_inside_radius', ['W'])}
 
 target_box_nm: {cfg.get('target_box_nm', 30.0)}
 
-solvent_cs_gro: "{cfg.get('solvent_cs_gro', 'version1/shared_assets/martini_W.gro')}"
+solvent_cs_gro: "{cfg.get('solvent_cs_gro', 'default/shared_assets/martini_W.gro')}"
 genion_solvent_group: "{cfg.get('genion_solvent_group', 'W')}"
 gas: "{cfg.get('gas','O2')}"
 
@@ -106,26 +113,25 @@ out_removed_top: "system.top"
 """
     tmp_cfg.write_text(tmp_cfg_text, encoding="utf-8")
 
-    print("\n[Phase2] Solvate + add ions + remove bubble solvent/ions ...")
+    print("\n[Phase2] Solvate -> remove bubble solvent -> genion -neutral -> genion -conc ...")
     subprocess.run(
         [sys.executable, str(repo_root / "add_solvate_ions_remove_bubble.py"), "--config", str(tmp_cfg)],
         check=True,
         cwd=str(repo_root),
     )
 
-    # 复制默认 mdps/itps/pipe.sh 到 phase2_run_dir（用于后续模拟）
-    default_dir = repo_root / "default"
-    # itps
-    shutil.copytree(default_dir / "itps", phase2_run_dir / "itps", dirs_exist_ok=True)
-    # mdps
-    mpds_src = default_dir / "mpds"
-    mdps_src = default_dir / "mdps"
+    # 复制 phase2 专用 mdps/pipe.sh，以及公共 itps 到 phase2_run_dir
+    shared_assets_dir = repo_root / "default" / "shared_assets"
+    shutil.copytree(shared_assets_dir / "itps", phase2_run_dir / "itps", dirs_exist_ok=True)
+
+    mdps_src = phase2_assets_dir / "mdps"
     if mdps_src.is_dir():
+        shutil.rmtree(phase2_run_dir / "mdps", ignore_errors=True)
         shutil.copytree(mdps_src, phase2_run_dir / "mdps", dirs_exist_ok=True)
-    elif mpds_src.is_dir():
-        shutil.copytree(mpds_src, phase2_run_dir / "mdps", dirs_exist_ok=True)
-    # pipe.sh
-    shutil.copy2(default_dir / "pipe.sh", phase2_run_dir / "pipe.sh")
+
+    pipe_sh_src = phase2_assets_dir / "pipe.sh"
+    if pipe_sh_src.is_file():
+        shutil.copy2(pipe_sh_src, phase2_run_dir / "pipe.sh")
 
     # 生成 system.ndx（Phase2 需要 tc-grps: lnb_layer/lnb_gas/solute）
     print("\n[Phase2] Generating system.ndx ...")

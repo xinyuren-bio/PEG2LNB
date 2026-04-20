@@ -1,20 +1,21 @@
-# Phase2：改盒子 -> gmx 填充水与 NaCl -> MDAnalysis 删掉气泡质心半径内的 W/NA/CL -> 完成含水含盐模拟
+# Phase2：改盒子 -> gmx 填充 W -> 删掉气泡内溶剂(建议仅W) -> 先 genion -neutral，再 genion -conc
 
-phase1_run_dir: "/Users/renxinyu/lipid_simulation/peg10"
-phase2_run_dir: "/Users/renxinyu/lipid_simulation/peg10/phase2"
+# 与 phase1.yaml 中 peg.vacuum_run_dir 保持一致（相对 PEG2LNB 根目录）
+phase1_run_dir: "output/phase1"
+phase2_run_dir: "output/phase2"
 
-# 如果你在 Phase1 的模拟里，最终坐标文件名是 production.gro，就不用改
-dry_gro_candidates: ["production.gro", "equilibration_1.gro", "equilibration_4.gro", "minimization_2.gro"]
+# 按顺序选用 phase1_run_dir 下第一个存在的文件；都不存在则回退为 system.gro
+dry_gro_candidates: ["system_fix.gro", "system.gro", "equilibration_1.gro"]
 
-target_box_nm: 35.0
+target_box_nm: 40.0
 bubble_radius_nm: 12.0
 salt_conc_m: 0.15
 
 # 气泡质心用于距离判定（不含 PEG、不含 O2）
-center_resnames: ["DPPC", "DOPS", "CHOL"]
+center_resnames: ["DPPC"]
 
-# 删除气泡内溶剂
-remove_resnames_inside_radius: ["W", "NA", "CL"]
+# 删泡内溶剂：仅中和流程下建议只删 W（加盐前无 NA/CL）
+remove_resnames_inside_radius: ["W"]
 
 # 用于 gmx genion 交互选择的组名（你的 Martini 水组名是 W）
 genion_solvent_group: "W"
@@ -22,5 +23,5 @@ genion_solvent_group: "W"
 gas: "O2"  # 生成 ndx 的气体组名（残基名）
 
 # Martini 水坐标文件（resname 必须是 W）
-solvent_cs_gro: "shared_assets/martini_W.gro"
+solvent_cs_gro: "default/shared_assets/martini_W.gro"
 
