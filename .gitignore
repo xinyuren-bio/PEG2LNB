@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.so
+.venv/
+venv/
+.env
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Local build outputs (large coordinates / tops)
+work/
+output/
+
+# Optional: keep small MDPs in repo; ignore accidental large trajectories
+*.xtc
+*.trr
+*.edr
+*.cpt
+*.log
